@@ -138,6 +138,10 @@ class UNOServer:
         self._done_event   = threading.Event()
         self._player_seq   = 0   # monotonically increasing; never recycled
 
+        # Play-again state (active only while phase == "finished")
+        self._play_again_invited = False
+        self._play_again_votes:  Dict[str, bool] = {}   # pid → True(accept)/False(decline)
+
     # -----------------------------------------------------------------------
     # Public entry points
     # -----------------------------------------------------------------------
@@ -242,6 +246,11 @@ class UNOServer:
                 player = self._state.get_player(client.player_id)
                 if player:
                     player.is_connected = False
+            # Cancel any pending play-again if a participant left
+            if self._play_again_invited:
+                self._play_again_invited = False
+                self._play_again_votes   = {}
+                self._broadcast({"type": "play_again_cancelled"})
         self._broadcast({"type": "player_disconnected", "player_id": client.player_id})
         client.close()
         print(f"[Server] {client.player_id} disconnected.")
@@ -254,12 +263,15 @@ class UNOServer:
         """Route one parsed message to the correct handler under the lock."""
         action = msg.get("action")
         with self._lock:
-            if   action == "set_name":   self._h_set_name(player_id, msg)
-            elif action == "start_game": self._h_start_game(player_id)
-            elif action == "play_card":  self._h_play_card(player_id, msg)
-            elif action == "draw_card":  self._h_draw_card(player_id)
-            elif action == "pass_turn":  self._h_pass_turn(player_id)
-            elif action == "react":      self._h_react(player_id)
+            if   action == "set_name":          self._h_set_name(player_id, msg)
+            elif action == "start_game":         self._h_start_game(player_id)
+            elif action == "play_card":          self._h_play_card(player_id, msg)
+            elif action == "draw_card":          self._h_draw_card(player_id)
+            elif action == "pass_turn":          self._h_pass_turn(player_id)
+            elif action == "react":              self._h_react(player_id)
+            elif action == "play_again_invite":  self._h_play_again_invite(player_id)
+            elif action == "play_again_accept":  self._h_play_again_vote(player_id, True)
+            elif action == "play_again_decline": self._h_play_again_vote(player_id, False)
             else:
                 self._send(player_id, {"type": "error", "message": f"Unknown action '{action}'."})
 
@@ -495,6 +507,95 @@ class UNOServer:
     # Game over
     # -----------------------------------------------------------------------
 
+    # -----------------------------------------------------------------------
+    # Play-again handlers  (all called while self._lock is held)
+    # -----------------------------------------------------------------------
+
+    def _h_play_again_invite(self, player_id: str) -> None:
+        """Host toggles a play-again invite to all connected non-host players."""
+        if self._state is None or self._state.phase != "finished":
+            self._err(player_id, "Can only invite when the game is finished.")
+            return
+        if player_id != "p0":
+            self._err(player_id, "Only the host can send a play-again invite.")
+            return
+
+        non_host_ids = [pid for pid in self._clients if pid != "p0"]
+        if not non_host_ids:
+            self._err(player_id, "No other players connected.")
+            return
+
+        if self._play_again_invited:
+            # Toggle off — cancel the pending invite
+            self._play_again_invited = False
+            self._play_again_votes   = {}
+            self._broadcast({"type": "play_again_cancelled"})
+            self._ok(player_id, [])
+            print("[Server] Host cancelled play-again invite.")
+            return
+
+        self._play_again_invited = True
+        self._play_again_votes   = {}
+        host_name = self._clients["p0"].name
+
+        for pid in non_host_ids:
+            self._send(pid, {"type": "play_again_invite", "host_name": host_name})
+
+        # Give host the initial status (all non-hosts still pending)
+        self._send(player_id, {
+            "type":     "play_again_status",
+            "accepted": [],
+            "pending":  non_host_ids,
+        })
+        self._ok(player_id, [])
+        print("[Server] Host sent play-again invite.")
+
+    def _h_play_again_vote(self, player_id: str, accept: bool) -> None:
+        """Non-host player accepts or declines a play-again invite."""
+        if self._state is None or self._state.phase != "finished":
+            self._err(player_id, "Not in finished phase.")
+            return
+        if not self._play_again_invited:
+            self._err(player_id, "No play-again invite is active.")
+            return
+        if player_id == "p0":
+            self._err(player_id, "Host cannot vote on their own invite.")
+            return
+
+        self._play_again_votes[player_id] = accept
+        self._ok(player_id, [])
+
+        non_host_ids = [pid for pid in self._clients if pid != "p0"]
+
+        if not accept:
+            self._play_again_invited = False
+            self._play_again_votes   = {}
+            self._broadcast({"type": "play_again_cancelled"})
+            print(f"[Server] {player_id} declined play-again.")
+            return
+
+        accepted = [pid for pid, v in self._play_again_votes.items() if v]
+        pending  = [pid for pid in non_host_ids if pid not in self._play_again_votes]
+        status   = {"type": "play_again_status", "accepted": accepted, "pending": pending}
+        self._broadcast(status)
+
+        if not pending:   # every non-host accepted
+            self._restart_game()
+
+    def _restart_game(self) -> None:
+        """Reset game state and start a new round with the same players."""
+        names = [self._clients[pid].name for pid in sorted(self._clients)]
+        self._state = deal_initial_state(names)
+        self._play_again_invited = False
+        self._play_again_votes   = {}
+        print(f"[Server] Game restarted with {len(self._clients)} players.")
+        self._broadcast({"type": "game_started"})
+        self._broadcast_state()
+
+    # -----------------------------------------------------------------------
+    # Game over
+    # -----------------------------------------------------------------------
+
     def _on_game_over(self) -> None:
         winner = self._state.get_player(self._state.winner_id)
         payload = {
@@ -505,7 +606,10 @@ class UNOServer:
         self._broadcast(payload)
         self._broadcast_state()
         print(f"[Server] Game over — winner: {self._state.winner_id} ({winner.name if winner else '?'})")
-        self._done_event.set()
+        # Keep server alive so host can invite everyone to play again.
+        # Server stops when host calls stop() (closes window) or all leave.
+        self._play_again_invited = False
+        self._play_again_votes   = {}
 
 
 # ---------------------------------------------------------------------------

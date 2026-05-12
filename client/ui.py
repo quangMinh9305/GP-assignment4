@@ -329,6 +329,26 @@ class GameClient:
                                     "  React!  ",
                                     col=(160, 30, 30), hov=(210, 55, 55))
 
+        # Play-again buttons (finished screen)
+        self._btn_play_again   = _Button(
+            pygame.Rect(WIN_W // 2 - 110, WIN_H // 2 + 42, 220, 46),
+            "Play Again", col=(40, 130, 70), hov=(60, 170, 95))
+        self._btn_accept_again = _Button(
+            pygame.Rect(WIN_W // 2 - 185, WIN_H // 2 + 42, 165, 46),
+            "Accept", col=(40, 130, 70), hov=(60, 170, 95))
+        self._btn_decline_again = _Button(
+            pygame.Rect(WIN_W // 2 + 20,  WIN_H // 2 + 42, 165, 46),
+            "Exit", col=(130, 40, 40), hov=(170, 60, 60))
+        self._btn_exit_game = _Button(
+            pygame.Rect(WIN_W // 2 - 95, WIN_H // 2 + 22, 190, 46),
+            "Exit to Menu", col=(130, 40, 40), hov=(170, 60, 60))
+
+        # Play-again state tracking
+        # "" | "inviting" | "invited" | "waiting" | "cancelled"
+        self._play_again_state:    str  = ""
+        self._play_again_accepted: list = []
+        self._play_again_pending:  list = []
+
         # Color-pick overlay buttons
         _bw, _bh = 100, 80
         _cx = WIN_W // 2 - (_bw * 4 + 30) // 2
@@ -518,6 +538,28 @@ class GameClient:
     # Notifications
     # -----------------------------------------------------------------------
 
+    def _reset_to_main_menu(self) -> None:
+        """Disconnect, stop server if hosting, and return to the main menu."""
+        if self._net:
+            self._net.close()
+            self._net = None
+        if self._server:
+            self._server.stop()
+            self._server = None
+        if self._discovery:
+            self._discovery.stop()
+            self._discovery = None
+        self._state = {}
+        self._lobby = []
+        self._room_code   = ""
+        self._play_again_state    = ""
+        self._play_again_accepted = []
+        self._play_again_pending  = []
+        self._inp_name.rect   = pygame.Rect(WIN_W // 2 - 160, 320, 320, 46)
+        self._inp_name.active = True
+        self._inp_room.active = False
+        self._ui_phase = "main_menu"
+
     def _add_notif(self, msg: str, ntype: str = "info", ttl: float = 4.0) -> None:
         self._notifs.insert(0, _Notif(msg, ntype, ttl=ttl))
         if len(self._notifs) > 4:
@@ -618,12 +660,20 @@ class GameClient:
                 self._host_game()
             elif self._btn_join.clicked(pos):
                 self._ui_phase = "join_room"
-                self._inp_room.active = True
+                # Reposition inputs so they don't overlap in the join room layout
+                self._inp_name.rect = pygame.Rect(WIN_W // 2 - 160, 295, 320, 40)
+                self._inp_room.rect = pygame.Rect(WIN_W // 2 - 160, 375, 320, 40)
+                self._inp_name.active = True
+                self._inp_room.active = False
             return
 
         # ── Join room ────────────────────────────────────────────────────────
         if phase == "join_room":
             if self._btn_back.clicked(pos):
+                # Restore name input to its main-menu position
+                self._inp_name.rect = pygame.Rect(WIN_W // 2 - 160, 320, 320, 46)
+                self._inp_name.active = True
+                self._inp_room.active = False
                 self._ui_phase = "main_menu"
             elif self._btn_connect.clicked(pos):
                 self._try_connect_input()
@@ -652,6 +702,30 @@ class GameClient:
         if phase == "rule8_reaction":
             if self._btn_react.clicked(pos):
                 self._net.send(action="react")
+            return
+
+        # ── Finished — play-again interactions ──────────────────────────────
+        if phase == "finished":
+            # Exit to menu is available to everyone when cancelled
+            if self._play_again_state == "cancelled":
+                if self._btn_exit_game.clicked(pos):
+                    self._reset_to_main_menu()
+                return
+
+            if self._my_id == "p0":   # host
+                if (self._play_again_state == ""
+                        and self._btn_play_again.clicked(pos)
+                        and self._net):
+                    self._play_again_state = "inviting"
+                    self._net.send(action="play_again_invite")
+            else:                     # non-host
+                if self._play_again_state == "invited":
+                    if self._btn_accept_again.clicked(pos) and self._net:
+                        self._play_again_state = "waiting"
+                        self._net.send(action="play_again_accept")
+                    elif self._btn_decline_again.clicked(pos) and self._net:
+                        self._play_again_state = ""
+                        self._net.send(action="play_again_decline")
             return
 
         # ── Playing ──────────────────────────────────────────────────────────
@@ -763,6 +837,9 @@ class GameClient:
                 self._deal_phase    = "shuffle"
                 self._deal_elapsed  = 0.0
                 self._deal_state_ready = False
+                self._play_again_state    = ""
+                self._play_again_accepted = []
+                self._play_again_pending  = []
                 self._start_music()
                 self._add_notif("Game started! Dealing cards…", "info")
 
@@ -814,6 +891,24 @@ class GameClient:
                 wname = msg.get("winner_name", "?")
                 self._add_notif(f"Game over!  {wname} wins!", "success", ttl=8.0)
                 self._ui_phase = "finished"
+                self._play_again_state    = ""
+                self._play_again_accepted = []
+                self._play_again_pending  = []
+
+            elif mtype == "play_again_invite":
+                self._play_again_state = "invited"
+                host = msg.get("host_name", "Host")
+                self._add_notif(f"{host} wants to play again!", "info", ttl=15.0)
+
+            elif mtype == "play_again_status":
+                self._play_again_accepted = msg.get("accepted", [])
+                self._play_again_pending  = msg.get("pending",  [])
+
+            elif mtype == "play_again_cancelled":
+                self._play_again_state    = "cancelled"
+                self._play_again_accepted = []
+                self._play_again_pending  = []
+                self._add_notif("Play again was cancelled.", "warn", ttl=6.0)
 
             elif mtype == "player_disconnected":
                 pid = msg.get("player_id", "")
@@ -919,7 +1014,7 @@ class GameClient:
                 if phase == "rule8_reaction":
                     self._render_rule8_overlay(mouse)
                 if phase == "finished":
-                    self._render_finished_overlay()
+                    self._render_finished_overlay(mouse)
             self._render_animations()
         elif phase == "error":
             self._draw_bg("menu")
@@ -994,21 +1089,21 @@ class GameClient:
         self._btn_back.draw(self._screen, self._fmd, mouse)
 
     def _render_join_room(self, mouse: tuple) -> None:
-        panel = pygame.Surface((700, 320), pygame.SRCALPHA)
+        panel = pygame.Surface((700, 340), pygame.SRCALPHA)
         panel.fill((10, 20, 15, 175))
         pygame.draw.rect(panel, (60, 100, 200, 200), panel.get_rect(), 2, border_radius=16)
-        self._screen.blit(panel, (WIN_W // 2 - 350, 200))
+        self._screen.blit(panel, (WIN_W // 2 - 350, 190))
 
         title = self._flg.render("Join a Room", True, TEXT_COL)
         self._screen.blit(title, title.get_rect(center=(WIN_W // 2, 240)))
 
         name_lbl = self._fsm.render("Your name:", True, (160, 200, 160))
-        self._screen.blit(name_lbl, (WIN_W // 2 - 160, 300))
-        self._inp_name.draw(self._screen, self._fmd)
+        self._screen.blit(name_lbl, (WIN_W // 2 - 160, 278))
+        self._inp_name.draw(self._screen, self._fmd)   # rect repositioned to y=295
 
         code_lbl = self._fsm.render("Room code (4 letters) or IP:Port:", True, (160, 200, 160))
-        self._screen.blit(code_lbl, (WIN_W // 2 - 160, 332))
-        self._inp_room.draw(self._screen, self._fmd)
+        self._screen.blit(code_lbl, (WIN_W // 2 - 160, 358))
+        self._inp_room.draw(self._screen, self._fmd)   # rect repositioned to y=375
 
         if self._discovering:
             spin = "◐◓◑◒"[int(time.monotonic() * 4) % 4]
@@ -1334,25 +1429,84 @@ class GameClient:
     # Game-over overlay
     # -----------------------------------------------------------------------
 
-    def _render_finished_overlay(self) -> None:
+    def _render_finished_overlay(self, mouse: tuple) -> None:
         veil = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
         veil.fill((0, 0, 0, 170))
         self._screen.blit(veil, (0, 0))
 
-        panel = pygame.Surface((600, 200), pygame.SRCALPHA)
+        panel = pygame.Surface((700, 280), pygame.SRCALPHA)
         panel.fill((15, 30, 20, 210))
         pygame.draw.rect(panel, HIGHLIGHT_COL, panel.get_rect(), 3, border_radius=18)
-        self._screen.blit(panel, (WIN_W // 2 - 300, WIN_H // 2 - 100))
+        px = WIN_W // 2 - 350
+        py = WIN_H // 2 - 140
+        self._screen.blit(panel, (px, py))
 
+        cx = WIN_W // 2
+        # Win/lose headline
         winner_id   = self._state.get("winner_id", "")
         winner_name = self._player_name(winner_id)
         is_me       = winner_id == self._my_id
         msg_col     = (255, 220, 50) if is_me else TEXT_COL
         msg_text    = "You win!" if is_me else f"{winner_name} wins!"
         msg = self._fxl.render(msg_text, True, msg_col)
-        self._screen.blit(msg, msg.get_rect(center=(WIN_W // 2, WIN_H // 2 - 30)))
-        sub = self._fmd.render("Close the window to exit.", True, (160, 160, 160))
-        self._screen.blit(sub, sub.get_rect(center=(WIN_W // 2, WIN_H // 2 + 30)))
+        self._screen.blit(msg, msg.get_rect(center=(cx, py + 60)))
+
+        # ── Host UI ──────────────────────────────────────────────────────────
+        if self._my_id == "p0":
+            if self._play_again_state == "":
+                sub = self._flg.render("Invite everyone for a rematch?", True, (200, 240, 200))
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 108)))
+                self._btn_play_again.draw(self._screen, self._fmd, mouse)
+                hint = self._fsm.render("or close the window to exit", True, (100, 130, 100))
+                self._screen.blit(hint, hint.get_rect(center=(cx, py + 245)))
+
+            elif self._play_again_state == "inviting":
+                sub = self._flg.render("Invite sent — waiting for players…", True, (160, 220, 180))
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 105)))
+                all_ids = self._play_again_accepted + self._play_again_pending
+                row_y   = py + 145
+                for pid in all_ids:
+                    name = self._player_name(pid)
+                    if pid in self._play_again_accepted:
+                        icon, col = "✓", OK_COL
+                    else:
+                        icon, col = "…", WARN_COL
+                    line = self._fmd.render(f"{icon}  {name}", True, col)
+                    self._screen.blit(line, line.get_rect(center=(cx, row_y)))
+                    row_y += 28
+
+            elif self._play_again_state == "cancelled":
+                sub = self._fmd.render("A player declined or disconnected.", True, ERR_COL)
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 105)))
+                self._btn_exit_game.draw(self._screen, self._fmd, mouse)
+
+        # ── Non-host UI ──────────────────────────────────────────────────────
+        else:
+            if self._play_again_state == "":
+                sub = self._fmd.render("Waiting for host…", True, (140, 170, 140))
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 110)))
+                hint = self._fsm.render("Close the window to exit.", True, (100, 130, 100))
+                self._screen.blit(hint, hint.get_rect(center=(cx, py + 145)))
+
+            elif self._play_again_state == "invited":
+                # Highlight box behind the invite message so it stands out
+                inv_box = pygame.Surface((480, 44), pygame.SRCALPHA)
+                inv_box.fill((50, 120, 60, 160))
+                pygame.draw.rect(inv_box, OK_COL, inv_box.get_rect(), 2, border_radius=8)
+                self._screen.blit(inv_box, inv_box.get_rect(center=(cx, py + 108)))
+                sub = self._flg.render("Host wants a rematch!", True, (140, 255, 160))
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 108)))
+                self._btn_accept_again.draw(self._screen, self._fmd, mouse)
+                self._btn_decline_again.draw(self._screen, self._fmd, mouse)
+
+            elif self._play_again_state == "waiting":
+                sub = self._flg.render("Ready! Waiting for other players…", True, OK_COL)
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 110)))
+
+            elif self._play_again_state == "cancelled":
+                sub = self._fmd.render("Play again was cancelled.", True, ERR_COL)
+                self._screen.blit(sub, sub.get_rect(center=(cx, py + 105)))
+                self._btn_exit_game.draw(self._screen, self._fmd, mouse)
 
     # -----------------------------------------------------------------------
     # Deal animation render

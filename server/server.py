@@ -334,12 +334,25 @@ class UNOServer:
 
     def _broadcast_lobby_update(self) -> None:
         with self._lock:
+            # Get avatar colors from game state if available, else use defaults
+            payload_players = []
+            for pid, c in self._clients.items():
+                player_data = {"player_id": pid, "name": c.name}
+                # Get avatar color from game state if it exists
+                if self._state:
+                    player = self._state.get_player(pid)
+                    if player:
+                        player_data["avatar_color"] = player.avatar_color
+                else:
+                    # Use default colors based on player index
+                    from game.models import AVATAR_COLORS
+                    player_idx = int(pid[1:]) if pid.startswith("p") else 0
+                    player_data["avatar_color"] = AVATAR_COLORS[player_idx % len(AVATAR_COLORS)]
+                payload_players.append(player_data)
+            
             payload = {
                 "type": "lobby_update",
-                "players": [
-                    {"player_id": pid, "name": c.name}
-                    for pid, c in self._clients.items()
-                ],
+                "players": payload_players,
                 "min_players": self.min_players,
                 "max_players": self.max_players,
             }

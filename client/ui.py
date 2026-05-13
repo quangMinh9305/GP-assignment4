@@ -1179,8 +1179,15 @@ class GameClient:
             if p["player_id"] == "p0":    tags += "  HOST"
             if p["player_id"] == self._my_id: tags += "  (you)"
             col  = (255, 230, 80) if p["player_id"] == "p0" else TEXT_COL
+            
+            # Draw avatar icon
+            avatar_color = p.get("avatar_color", "#FF6B6B")
+            avatar_initials = self._get_initials(p['name'])
+            self._draw_avatar(WIN_W // 2 - 280, y + 8, 14, avatar_color, avatar_initials, False)
+            
+            # Draw name text
             line = self._fmd.render(f"   {p['name']}{tags}", True, col)
-            self._screen.blit(line, line.get_rect(centerx=WIN_W // 2, top=y))
+            self._screen.blit(line, line.get_rect(centerx=WIN_W // 2 + 50, top=y))
             y += 28
 
         if self._my_id == "p0":
@@ -1579,6 +1586,29 @@ class GameClient:
         veil = pygame.Surface((WIN_W, WIN_H), pygame.SRCALPHA)
         veil.fill((0, 0, 0, 60))
         self._screen.blit(veil, (0, 0))
+
+        # Display player avatars and names during dealing
+        players = self._state.get("players", [])
+        if players:
+            opp_players = [p for p in players if p["player_id"] != self._my_id]
+            opp_n = len(opp_players)
+            
+            # Display opponent avatars and names
+            for k, opp in enumerate(opp_players):
+                sec_w = WIN_W // opp_n
+                cx = sec_w * k + sec_w // 2
+                
+                avatar_color = opp.get("avatar_color", "#FF6B6B")
+                avatar_initials = self._get_initials(opp["name"])
+                is_disconnected = not opp.get("is_connected", True)
+                
+                # Draw avatar
+                self._draw_avatar(cx, OPP_Y + 35, 22, avatar_color, avatar_initials, is_disconnected)
+                
+                # Draw name
+                name_col = (100, 150, 100) if is_disconnected else TEXT_COL
+                ns = self._fmd.render(opp['name'], True, name_col)
+                self._screen.blit(ns, ns.get_rect(centerx=cx, top=OPP_Y + 65))
 
         if self._deal_phase == "shuffle":
             t = min(1.0, self._deal_elapsed / 1.2)

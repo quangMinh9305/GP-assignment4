@@ -171,6 +171,7 @@ class Player:
     name: str
     hand: List[Card] = field(default_factory=list)
     is_connected: bool = True
+    avatar_color: str = "#FF6B6B"  # Default red avatar color (anonymous)
 
     def hand_count(self) -> int:
         return len(self.hand)
@@ -190,6 +191,7 @@ class Player:
             "hand": [] if hide_hand else [c.to_dict() for c in self.hand],
             "hand_count": self.hand_count(),
             "is_connected": self.is_connected,
+            "avatar_color": self.avatar_color,
         }
 
     @classmethod
@@ -199,6 +201,7 @@ class Player:
             name=d["name"],
             hand=[Card.from_dict(c) for c in d.get("hand", [])],
             is_connected=d.get("is_connected", True),
+            avatar_color=d.get("avatar_color", "#FF6B6B"),
         )
 
 
@@ -361,6 +364,14 @@ class GameState:
 # Initial deal
 # ---------------------------------------------------------------------------
 
+# Default avatar colors for players (assigned in order)
+AVATAR_COLORS = [
+    "#FF6B6B",  # Red
+    "#4ECDC4",  # Teal
+    "#45B7D1",  # Blue
+    "#FFA07A",  # Light salmon
+]
+
 def deal_initial_state(player_names: List[str]) -> GameState:
     """
     Build a freshly shuffled, fully dealt GameState ready for play.
@@ -378,7 +389,11 @@ def deal_initial_state(player_names: List[str]) -> GameState:
     deck.shuffle()
 
     players = [
-        Player(player_id=f"p{i}", name=name)
+        Player(
+            player_id=f"p{i}",
+            name=name,
+            avatar_color=AVATAR_COLORS[i % len(AVATAR_COLORS)]
+        )
         for i, name in enumerate(player_names)
     ]
 

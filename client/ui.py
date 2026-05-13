@@ -408,6 +408,46 @@ class GameClient:
             pass
 
     # -----------------------------------------------------------------------
+    # Avatar rendering helpers
+    # -----------------------------------------------------------------------
+
+    def _hex_to_rgb(self, hex_color: str) -> Tuple[int, int, int]:
+        """Convert hex color (e.g., #FF6B6B) to RGB tuple."""
+        hex_color = hex_color.lstrip('#')
+        return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+
+    def _draw_avatar(self, cx: int, cy: int, radius: int, color_hex: str, 
+                     initials: str = "P", is_disconnected: bool = False) -> None:
+        """Draw a circular avatar with initials. Apply grayscale if disconnected."""
+        rgb = self._hex_to_rgb(color_hex)
+        
+        # Apply grayscale effect if disconnected
+        if is_disconnected:
+            # Convert to grayscale: 0.299*R + 0.587*G + 0.114*B
+            gray = int(0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
+            rgb = (gray, gray, gray)
+        
+        # Draw filled circle
+        pygame.draw.circle(self._screen, rgb, (cx, cy), radius)
+        # Draw border
+        pygame.draw.circle(self._screen, TEXT_COL, (cx, cy), radius, 2)
+        
+        # Draw initials
+        init_surf = self._fmd.render(initials, True, (255, 255, 255))
+        init_rect = init_surf.get_rect(center=(cx, cy))
+        self._screen.blit(init_surf, init_rect)
+
+    def _get_initials(self, name: str) -> str:
+        """Get 1-2 letter initials from a name."""
+        name = name.strip()
+        if not name:
+            return "P"
+        parts = name.split()
+        if len(parts) >= 2:
+            return (parts[0][0] + parts[-1][0]).upper()
+        return name[0].upper()
+
+    # -----------------------------------------------------------------------
     # Networking helpers
     # -----------------------------------------------------------------------
 
@@ -914,6 +954,10 @@ class GameClient:
                 pid = msg.get("player_id", "")
                 self._add_notif(f"{self._player_name(pid)} disconnected.", "warn")
 
+            elif mtype == "host_disconnected":
+                self._ui_phase = "error"
+                self._add_notif("Host disconnected — all players kicked.", "error", ttl=9999)
+
             elif mtype == "disconnected":
                 self._ui_phase = "error"
                 self._add_notif("Lost connection to the server.", "error", ttl=9999)
@@ -1224,9 +1268,17 @@ class GameClient:
             cx = sec_w * i + sec_w // 2
             y  = OPP_Y + 8
             is_active = opp["player_id"] == cur_pid
+            is_disconnected = not opp.get("is_connected", True)
             name_col  = (255, 230, 80) if is_active else TEXT_COL
+            
+            # Apply grayscale to name if disconnected
+            if is_disconnected:
+                gray = int(0.299 * name_col[0] + 0.587 * name_col[1] + 0.114 * name_col[2])
+                name_col = (gray, gray, gray)
+            
             cnt       = opp["hand_count"]
-            ns = self._fmd.render(f"{opp['name']}  [{cnt} card{'s' if cnt != 1 else ''}]",
+            status_suffix = " [DISCONNECTED]" if is_disconnected else ""
+            ns = self._fmd.render(f"{opp['name']}{status_suffix}  [{cnt} card{'s' if cnt != 1 else ''}]",
                                   True, name_col)
             if is_active:
                 glow = pygame.Surface((ns.get_width() + 16, ns.get_height() + 8), pygame.SRCALPHA)
@@ -1235,6 +1287,13 @@ class GameClient:
             self._screen.blit(ns, ns.get_rect(centerx=cx, top=y))
             y += ns.get_height() + 6
 
+            # Draw avatar
+            avatar_color = opp.get("avatar_color", "#FF6B6B")
+            avatar_initials = self._get_initials(opp["name"])
+            self._draw_avatar(cx, y + 20, 18, avatar_color, avatar_initials, is_disconnected)
+            y += 50
+
+            # Draw cards (apply dim overlay if disconnected)
             n_show = min(cnt, 10)
             if n_show:
                 back    = self._assets.get_back((OPP_CW, OPP_CH))
@@ -1243,6 +1302,9 @@ class GameClient:
                 sx = cx - total_w // 2
                 for j in range(n_show):
                     self._screen.blit(back, (sx + j * spacing, y))
+                    # Apply grayscale overlay if disconnected
+                    if is_disconnected:
+                        self._screen.blit(self._dim_surf, (sx + j * spacing, y))
             if cnt > 10:
                 more = self._fsm.render(f"+{cnt-10}", True, TEXT_COL)
                 self._screen.blit(more, (cx - more.get_width() // 2, y + OPP_CH + 2))

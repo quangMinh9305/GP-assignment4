@@ -246,11 +246,47 @@ class UNOServer:
                 player = self._state.get_player(client.player_id)
                 if player:
                     player.is_connected = False
+            
             # Cancel any pending play-again if a participant left
             if self._play_again_invited:
                 self._play_again_invited = False
                 self._play_again_votes   = {}
                 self._broadcast({"type": "play_again_cancelled"})
+            
+            # Host (p0) disconnected → kick everyone
+            if client.player_id == "p0":
+                print("[Server] Host disconnected — kicking all players.")
+                self._broadcast({"type": "host_disconnected"})
+                # Close all remaining connections
+                for other_client in list(self._clients.values()):
+                    other_client.close()
+                self._clients.clear()
+                self._state = None
+                self._running = False
+                self._done_event.set()
+            # Game is active: check if 3+ players disconnected
+            elif self._state:
+                connected = [p for p in self._state.players if p.is_connected]
+                disconnected = [p for p in self._state.players if not p.is_connected]
+                num_disconnected = len(disconnected)
+                
+                # If 3 players disconnected and game is active, remaining player(s) win
+                if num_disconnected >= 3 and self._state.phase == "playing":
+                    print(f"[Server] {num_disconnected} players disconnected. Remaining players win!")
+                    if connected:
+                        # Set first remaining player as winner (or handle multiple remaining)
+                        self._state.winner_id = connected[0].player_id
+                        self._state.phase = "finished"
+                        winners = [p for p in connected]
+                        winner_names = ", ".join([p.name for p in winners])
+                        payload = {
+                            "type": "game_over",
+                            "winner_id": self._state.winner_id,
+                            "winner_name": winner_names if len(winners) > 1 else winners[0].name if winners else "Unknown",
+                        }
+                        self._broadcast(payload)
+                        self._broadcast_state()
+        
         self._broadcast({"type": "player_disconnected", "player_id": client.player_id})
         client.close()
         print(f"[Server] {client.player_id} disconnected.")

@@ -460,6 +460,7 @@ class GameClient:
     def _host_game(self) -> None:
         from server.server import UNOServer
         from server.discovery import DiscoveryServer, get_lan_ip
+        from server.firewall import ensure_firewall_rules
 
         self._room_code = "".join(random.choices(string.ascii_uppercase, k=4))
         self._room_port = GAME_PORT
@@ -473,8 +474,28 @@ class GameClient:
         self._discovery = DiscoveryServer(self._room_code, self._room_port)
         self._discovery.start()
 
+        threading.Thread(
+            target=self._setup_firewall,
+            args=(ensure_firewall_rules,),
+            daemon=True,
+            name="firewall-setup",
+        ).start()
+
         self._connect("127.0.0.1", self._room_port)
         self._add_notif(f"Room created: {self._room_code}", "success")
+
+    def _setup_firewall(self, ensure_fn) -> None:
+        status = ensure_fn()
+        _NOTIFS = {
+            "ok":             ("Firewall: ports 5555/5556 opened for LAN.", "info"),
+            "already_exists": (None, None),
+            "elevated":       ("Firewall: accept the UAC prompt to allow LAN access.", "warn"),
+            "failed":         ("Firewall: could not open ports — LAN clients may not connect.", "error"),
+            "skipped":        (None, None),
+        }
+        msg, ntype = _NOTIFS.get(status, (None, None))
+        if msg:
+            self._add_notif(msg, ntype)
 
     def _discover_and_connect(self, code: str) -> None:
         from server.discovery import discover_room

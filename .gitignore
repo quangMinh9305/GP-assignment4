@@ -1,5 +1,5 @@
 #Custom gitignore
-*.md
+
 .claude
 
 # Byte-compiled / optimized / DLL files

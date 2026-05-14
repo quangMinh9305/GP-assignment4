@@ -32,7 +32,7 @@ from game.models import Card
 # ---------------------------------------------------------------------------
 # Layout
 # ---------------------------------------------------------------------------
-WIN_W, WIN_H = 1280, 720
+WIN_W, WIN_H = 720, 600 
 
 HEADER_H  = 55
 OPP_Y     = HEADER_H
@@ -197,9 +197,11 @@ class _TextInput:
         self._cur_vis    = True
         self._transform  = str  # identity; override to str.upper for code inputs
 
-    def handle_event(self, event: pygame.event.Event) -> None:
+    def handle_event(self, event: pygame.event.Event,
+                     pos: Tuple[int, int] = None) -> None:
         if event.type == pygame.MOUSEBUTTONDOWN:
-            self.active = self.rect.collidepoint(event.pos)
+            p = pos if pos is not None else event.pos
+            self.active = self.rect.collidepoint(p)
         elif event.type == pygame.KEYDOWN and self.active:
             if event.key == pygame.K_BACKSPACE:
                 self.text = self.text[:-1]
@@ -244,7 +246,8 @@ class GameClient:
         pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
         pygame.display.set_caption("Custom UNO Online")
-        self._screen     = pygame.display.set_mode((WIN_W, WIN_H))
+        self._display    = pygame.display.set_mode((WIN_W, WIN_H), pygame.RESIZABLE)
+        self._screen     = pygame.Surface((WIN_W, WIN_H))
         self._clock      = pygame.time.Clock()
         self._assets_root = assets_root
 
@@ -386,6 +389,11 @@ class GameClient:
             return pygame.transform.smoothscale(img, (WIN_W, WIN_H))
         except Exception:
             return None
+
+    def _to_canvas(self, pos: Tuple[int, int]) -> Tuple[int, int]:
+        """Map a display-window position to canvas (design) coordinates."""
+        dw, dh = self._display.get_size()
+        return (int(pos[0] * WIN_W / dw), int(pos[1] * WIN_H / dh))
 
     def _draw_bg(self, key: str) -> None:
         bg = self._bg.get(key)
@@ -644,6 +652,7 @@ class GameClient:
             self._process_messages()
             self._update(dt)
             self._render()
+            pygame.transform.smoothscale(self._screen, self._display.get_size(), self._display)
             pygame.display.flip()
 
         if self._net:
@@ -659,19 +668,19 @@ class GameClient:
     # -----------------------------------------------------------------------
 
     def _handle_event(self, event: pygame.event.Event) -> None:
-        # Always forward key events to text inputs
-        self._inp_name.handle_event(event)
-        self._inp_room.handle_event(event)
+        canvas_pos = self._to_canvas(event.pos) if hasattr(event, "pos") else None
+        self._inp_name.handle_event(event, canvas_pos)
+        self._inp_room.handle_event(event, canvas_pos)
 
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_RETURN:
                 self._handle_return_key()
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            self._handle_click(event.pos)
+            self._handle_click(canvas_pos)
         elif event.type == pygame.MOUSEMOTION:
             if self._ui_phase == "playing" and not self._overlay:
-                self._hover_idx = self._card_at(event.pos)
+                self._hover_idx = self._card_at(canvas_pos)
             else:
                 self._hover_idx = -1
 
@@ -1056,7 +1065,7 @@ class GameClient:
 
     def _render(self) -> None:
         phase = self._ui_phase
-        mouse = pygame.mouse.get_pos()
+        mouse = self._to_canvas(pygame.mouse.get_pos())
 
         if phase in ("main_menu",):
             self._draw_bg("menu")
